@@ -1,0 +1,215 @@
+import time
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+from matplotlib.animation import FuncAnimation
+from threading import Thread
+import serial
+
+# Bluetooth configuration
+bluetooth_port = 'COM6'
+bluetooth_baudrate = 9600
+
+# Open Bluetooth serial connection
+bluetooth = serial.Serial(bluetooth_port, bluetooth_baudrate)
+
+# Robot specifications
+robot_length_cm = 78  # 78 cm length
+robot_width_cm = 72  # 72 cm width
+robot_speed_mps = 0.5  # Speed: 0.5 meters per second
+
+# Grid specifications
+grid_size_meters = 3  # 3x3 meters grid
+resolution = 0.1  # meters per cell
+grid_size = int(grid_size_meters / resolution)  # Number of cells
+
+# Initialize plot
+fig, ax = plt.subplots()
+ax.set_xlim(0, grid_size_meters)
+ax.set_ylim(0, grid_size_meters)
+ax.set_aspect('equal')
+ax.grid(True)
+
+# Initial position and orientation
+current_position = [robot_width_cm / 200, robot_length_cm / 200]  # Center the robot initially at (0,0)
+orientation_angle = 0  # Initial orientation angle in degrees (facing up)
+
+# Convert dimensions to meters for transformation purposes
+robot_width_m = robot_width_cm / 100
+robot_length_m = robot_length_cm / 100
+half_width_m = robot_width_m / 2
+half_length_m = robot_length_m / 2
+
+# Draw the robot as a rectangle, centered at current_position
+robot_patch = patches.Rectangle((-half_width_m, -half_length_m),
+                                robot_width_m, robot_length_m,
+                                fill=True, color='blue')
+ax.add_patch(robot_patch)
+
+# Forward and backward indicators (as small lines/arrows)
+forward_line = ax.plot([0, 0], [half_length_m, half_length_m + 0.1], 'g-')[0]  # Forward is green
+backward_line = ax.plot([0, 0], [-half_length_m, -half_length_m - 0.1], 'r-')[0]  # Backward is red
+
+# Top left and top right indicators (as circles)
+top_left_marker = ax.plot(-half_width_m, half_length_m, 'ro')[0]  # Red circle for top left
+top_right_marker = ax.plot(half_width_m, half_length_m, 'go')[0]  # Green circle for top right
+
+# Shared state for movement and turning
+current_command = None
+command_active = False
+turning_active = False
+auto_turn_direction = 'right'  # Default direction for 180-degree turn in auto mode
+
+# Function to move the robot continuously
+def move_robot_continuously():
+    global current_position, orientation_angle, command_active, current_command
+    while True:
+        if command_active and current_command in ['f', 'b']:
+            move_distance_m = robot_speed_mps * 0.1  # Distance per update (0.1s interval)
+            # Convert orientation angle to radians for calculations
+            rad_angle = np.radians(orientation_angle)
+            if current_command == 'f':  # Move forward
+                current_position[0] += move_distance_m * -np.sin(rad_angle)
+                current_position[1] += move_distance_m * np.cos(rad_angle)
+            elif current_command == 'b':  # Move backward
+                current_position[0] -= move_distance_m * -np.sin(rad_angle)
+                current_position[1] -= move_distance_m * np.cos(rad_angle)
+            time.sleep(0.1)  # Update every 0.1 seconds
+
+# Function to perform a 180-degree turn in a specified direction
+def turn_180_degrees(direction):
+    global orientation_angle
+    if direction == 'right':
+        target_angle = (orientation_angle + 180) % 360
+        turn_speed = 3.5  # degrees per update (positive for right turn)
+        while abs((orientation_angle - target_angle + 360) % 360) > turn_speed:
+            orientation_angle = (orientation_angle + turn_speed) % 360
+            time.sleep(0.1)
+    elif direction == 'left':
+        target_angle = (orientation_angle - 180) % 360
+        if target_angle < 0:
+            target_angle += 360
+        turn_speed = -3.5  # degrees per update (negative for left turn)
+        while abs((orientation_angle - target_angle + 360) % 360) > abs(turn_speed):
+            orientation_angle = (orientation_angle + turn_speed) % 360
+            if orientation_angle < 0:
+                orientation_angle += 360
+            time.sleep(0.1)
+    orientation_angle = target_angle
+
+# Function to handle continuous turning for manual control
+def handle_continuous_turning():
+    global orientation_angle, turning_active
+    turn_speed_factor = 3.5  # Speed multiplier for turning
+    while turning_active:
+        if current_command == 'l':  # Turn left (increase angle)
+            orientation_angle += 3.3
+            if orientation_angle >= 360:
+                orientation_angle -= 360
+        elif current_command == 'r':  # Turn right (decrease angle)
+            orientation_angle -= turn_speed_factor
+            if orientation_angle < 0:
+                orientation_angle += 360
+        time.sleep(0.1)  # Update angle every 0.1 seconds
+
+# Function to execute auto mode
+def execute_auto_mode():
+    global command_active
+    print("Auto mode started")
+
+    # Step 1: Move forward
+    for _ in range(10):  # Example: move forward 10 steps
+        send_command('f')
+        time.sleep(0.1)
+
+    # Step 2: Perform a 180-degree turn
+    turn_180_degrees(auto_turn_direction)
+    send_command('s')  # Send stop after turning to ensure clean start for next move
+    time.sleep(0.1)
+
+    # Step 3: Continue forward
+    for _ in range(10):  # Example: move forward another 10 steps
+        send_command('f')
+        time.sleep(0.1)
+
+    # Step 4: Stop
+    send_command('s')
+    command_active = False
+    print("Auto mode completed")
+
+# Function to update the plot with real-time data
+def update(frame):
+    transform = patches.Affine2D().rotate_deg_around(0, 0, orientation_angle) + \
+                patches.Affine2D().translate(current_position[0], current_position[1]) + \
+                plt.gca().transData
+    robot_patch.set_transform(transform)
+
+    # Update forward and backward indicators
+    forward_line.set_transform(transform)
+    backward_line.set_transform(transform)
+
+    # Update top left and top right markers
+    top_left_marker.set_transform(transform)
+    top_right_marker.set_transform(transform)
+
+    return robot_patch, forward_line, backward_line, top_left_marker, top_right_marker
+
+# Function to read commands from the terminal and send them via Bluetooth
+def read_commands():
+    global current_command, command_active, turning_active, auto_turn_direction
+    while True:
+        command = input("Enter command (f, b, l, r, s, auto, exit): ").strip().lower()
+        if command == 'exit':
+            send_command('s')  # Stop the robot
+            command_active = False
+            turning_active = False
+            break
+        elif command in ['f', 'b']:
+            current_command = command
+            command_active = True
+            turning_active = False
+            send_command(command)
+        elif command in ['l', 'r']:
+            current_command = command
+            command_active = False
+            turning_active = True
+            turn_thread = Thread(target=handle_continuous_turning)
+            turn_thread.start()
+        elif command == 's':
+            command_active = False
+            turning_active = False
+            send_command('s')
+        elif command == 'auto':
+            auto_turn_direction = input("Enter turn direction for auto mode (left/right): ").strip().lower()
+            if auto_turn_direction not in ['left', 'right']:
+                print("Invalid direction. Defaulting to 'right'.")
+                auto_turn_direction = 'right'
+            execute_auto_mode()
+
+# Function to send a command via Bluetooth
+def send_command(command):
+    print(f"Sending command: {command}")
+    bluetooth.write(command.encode())
+
+# Start the continuous movement thread
+movement_thread = Thread(target=move_robot_continuously)
+movement_thread.start()
+
+# Start a separate thread for reading commands from the terminal
+command_thread = Thread(target=read_commands)
+command_thread.start()
+
+# Set up the animation for real-time visualization
+ani = FuncAnimation(fig, update, blit=True, interval=100)
+
+plt.title("Live Robot Path")
+plt.xlabel("X (meters)")
+plt.ylabel("Y (meters)")
+plt.show()
+
+# Wait for the command thread to finish
+command_thread.join()
+
+# Close the Bluetooth connection
+bluetooth.close()
+print("Simulation finished.")
