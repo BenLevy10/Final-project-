@@ -1,1 +1,149 @@
+#include <SoftwareSerial.h>
+
+#define RX_PIN 2  // RX pin of BlueTooth Module connected to pin number 2 on the Arduino
+#define TX_PIN 3  // TX pin of BlueTooth Module connected to pin number 3 on the Arduino
+
+#define LEFT_MOTOR1_IN1 4
+#define LEFT_MOTOR1_IN2 5
+#define RIGHT_MOTOR1_IN1 6
+#define RIGHT_MOTOR1_IN2 7
+#define CLEANING_MOTOR_PIN 8  // Pin for the cleaning motor
+
+#define TRIG_PIN 9  // Trigger pin of the ultrasonic sensor
+#define ECHO_PIN 10  // Echo pin of the ultrasonic sensor
+
+SoftwareSerial Slave(TX_PIN, RX_PIN);
+char BluetoothData;  // Initialize BluetoothData variable
+
+int posX = 1, posY = 1; // Starting position
+const int obstacleThreshold = 20;  // Threshold distance in cm for obstacle detection
+
+void setup() {
+  // Set motor control pins as outputs
+  pinMode(LEFT_MOTOR1_IN1, OUTPUT);
+  pinMode(LEFT_MOTOR1_IN2, OUTPUT);
+  pinMode(RIGHT_MOTOR1_IN1, OUTPUT);
+  pinMode(RIGHT_MOTOR1_IN2, OUTPUT);
+  pinMode(CLEANING_MOTOR_PIN, OUTPUT);  // Set cleaning motor pin as output
+
+  //  sonar pins
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  // Initialize serial communication for debugging
+  Serial.begin(9600);
+  Slave.begin(9600);  // Bluetooth communication
+}
+
+void loop() {
+  // Hardcoded path (example, replace with your generated path)
+  int path[][2] = {
+    {1, 1}, {2, 1}, {3, 1}, {4, 1},
+    {4, 2}, {3, 2}, {2, 2}, {1, 2},
+    {1, 3}, {2, 3}, {3, 3}, {4, 3},
+    {4, 4}, {3, 4}, {2, 4}, {1, 4}
+  };
+  int pathLength = sizeof(path) / sizeof(path[0]);
+
+  for (int i = 0; i < pathLength; i++) {
+    if (checkForObstacle()) {
+      avoidObstacle();
+    } else {
+      moveTo(path[i][0], path[i][1]);
+    }
+  }
+}
+
+// Function to move the car to a specific cell
+void moveTo(int x, int y) {
+  turnOnCleaningMotor();
+  driveForward();
+  delay(1000); // Adjust delay for actual distance
+  stopDrive();
+  turnOffCleaningMotor();
+
+  // Update position
+  posX = x;
+  posY = y;
+
+  // Send position over Bluetooth
+  sendPosition();
+}
+
+void driveForward() {
+  digitalWrite(LEFT_MOTOR1_IN1, LOW);
+  digitalWrite(LEFT_MOTOR1_IN2, HIGH);
+  digitalWrite(RIGHT_MOTOR1_IN1, LOW);
+  digitalWrite(RIGHT_MOTOR1_IN2, HIGH);
+  turnOnCleaningMotor();
+}
+
+void driveBackward() {
+  digitalWrite(LEFT_MOTOR1_IN1, HIGH);
+  digitalWrite(LEFT_MOTOR1_IN2, LOW);
+  digitalWrite(RIGHT_MOTOR1_IN1, HIGH);
+  digitalWrite(RIGHT_MOTOR1_IN2, LOW);
+  turnOnCleaningMotor();
+}
+
+void turnLeft() {
+  digitalWrite(LEFT_MOTOR1_IN1, HIGH);
+  digitalWrite(LEFT_MOTOR1_IN2, LOW);
+  digitalWrite(RIGHT_MOTOR1_IN1, LOW);
+  digitalWrite(RIGHT_MOTOR1_IN2, HIGH);
+  turnOnCleaningMotor();
+}
+
+void turnRight() {
+  digitalWrite(LEFT_MOTOR1_IN1, LOW);
+  digitalWrite(LEFT_MOTOR1_IN2, HIGH);
+  digitalWrite(RIGHT_MOTOR1_IN1, HIGH);
+  digitalWrite(RIGHT_MOTOR1_IN2, LOW);
+  turnOnCleaningMotor();
+}
+
+void stopDrive() {
+  digitalWrite(LEFT_MOTOR1_IN1, LOW);
+  digitalWrite(LEFT_MOTOR1_IN2, LOW);
+  digitalWrite(RIGHT_MOTOR1_IN1, LOW);
+  digitalWrite(RIGHT_MOTOR1_IN2, LOW);
+  turnOffCleaningMotor();
+}
+
+void turnOnCleaningMotor() {
+  digitalWrite(CLEANING_MOTOR_PIN, HIGH);
+}
+
+void turnOffCleaningMotor() {
+  digitalWrite(CLEANING_MOTOR_PIN, LOW);
+}
+
+void sendPosition() {
+  String position = String(posX) + "," + String(posY);
+  Slave.println(position);
+  Serial.println("Position sent: " + position);  // For debugging
+}
+
+bool checkForObstacle() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  long duration = pulseIn(ECHO_PIN, HIGH);
+  long distance = (duration / 2) / 29.1;  // Convert duration to distance in cm
+  return distance < obstacleThreshold;
+}
+
+void avoidObstacle() {
+  stopDrive();
+  delay(500);
+  driveBackward();
+  delay(500);
+  stopDrive();
+  turnLeft();
+  delay(500);
+  stopDrive();
+  delay(500);
+}
 
